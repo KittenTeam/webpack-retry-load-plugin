@@ -12,7 +12,7 @@
 install
 
 ```shell
-npm i -D webpack-retry-load-plugin
+npm i -D @kitten-team/webpack-retry-load-plugin
 ```
 
 webpack config

@@ -1,6 +1,5 @@
 /* eslint-disable no-continue,no-restricted-syntax */
 const { ConcatSource } = require('webpack-sources');
-const { ModuleFilenameHelpers } = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const path = require('path');
 const attrParse = require('./attributesParser');
@@ -8,23 +7,21 @@ const { SCRIPT, pluginName } = require('./const');
 const MainTemplatePlugin = require('./mainTemplatePlugin');
 const babel = require('./babel');
 
-const varName = '__JS_RETRY__';
+/**
+ * 该参数用于指示同步（首屏）js的加载状态。
+ * 当首屏的js加载成功时，设置window.__JS_RETRY__[fileName] 为true
+ */
+const varName = 'window.__JS_RETRY__';
 
 /**
  * @typedef {Object} PluginOptions
- * @property {String} retryPublicPath 重试加载地址，例如://fudao.qq.com/pc
+ * @property {String} retryPublicPath 重试加载地址，必须以'/'结尾
+ * @property {String?} bkFileNames json格式文件名对应文件地址
  * @property {Boolean?} entryOnly default false
- * @property {String|RegExp|Array?} test 正则
- * @property {String|RegExp|Array?} include 需要重试的文件，可以不传
+ * 以下不直接使用，但在matchObject中生效
+ * 
+ * @property {String|RegExp|Array?} include 需要重试的文件，若此项不为空则exclude无效，只重试被指定的文件
  * @property {String|RegExp|Array?} exclude 不需要重试的文件
- * @property {String|Number} JS_SUCC_MSID JS成功
- * @property {String|Number} JS_FAIL_MSID JS失败
- * @property {String|Number} CSS_SUCC_MSID CSS成功
- * @property {String|Number} CSS_FAIL_MSID CSS失败
- * @property {String|Number} JS_RETRY_SUCC_MSID JS重试成功
- * @property {String|Number} JS_RETRY_FAIL_MSID JS重试失败
- * @property {String|Number} CSS_RETRY_SUCC_MSID CSS重试成功
- * @property {String|Number} CSS_RETRY_FAIL_MSID CSS重试失败
  */
 
 class RetryPlugin {
@@ -40,89 +37,61 @@ class RetryPlugin {
     this.options = Object.assign(
       {
         minimize: false, // 默认不压缩
-
-        JS_SUCC_MSID: '',
-        JS_FAIL_MSID: '',
-        CSS_SUCC_MSID: '',
-        CSS_FAIL_MSID: '',
-
-        JS_RETRY_SUCC_MSID: '',
-        JS_RETRY_FAIL_MSID: '',
-        CSS_RETRY_SUCC_MSID: '',
-        CSS_RETRY_FAIL_MSID: '',
       },
       options
     );
   }
 
-  genBadJsCode() {
-    const {
-      JS_SUCC_MSID = '',
-      JS_FAIL_MSID = '',
-      CSS_SUCC_MSID = '',
-      CSS_FAIL_MSID = '',
-
-      JS_RETRY_SUCC_MSID = '',
-      JS_RETRY_FAIL_MSID = '',
-      CSS_RETRY_SUCC_MSID = '',
-      CSS_RETRY_FAIL_MSID = '',
-    } = this.options;
-    return `
-var JS_SUCC_MSID = "${JS_SUCC_MSID}";
-var JS_FAIL_MSID = "${JS_FAIL_MSID}";
-var CSS_SUCC_MSID = "${CSS_SUCC_MSID}";
-var CSS_FAIL_MSID = "${CSS_FAIL_MSID}";
-
-var JS_RETRY_SUCC_MSID = "${JS_RETRY_SUCC_MSID}";
-var JS_RETRY_FAIL_MSID = "${JS_RETRY_FAIL_MSID}";
-var CSS_RETRY_SUCC_MSID = "${CSS_RETRY_SUCC_MSID}";
-var CSS_RETRY_FAIL_MSID = "${CSS_RETRY_FAIL_MSID}";
-
-var BADJS_LEVEL = ${this.options.badjsLevel || 2};
-
-var report = function(data){
-  setTimeout(function(){
-    window.BJ_REPORT&&window.BJ_REPORT.report(data);
-  },2000);
-}
-`;
-  }
-
+  /**
+   * 插入getRetryUrlCode函数。
+   * 仅插入函数定义。
+   */
   genGetRetryUrlCode() {
     return `
-function getRetryUrl(src){
-  var retryPublicPath  = "${this.options.retryPublicPath}";
-  var publicPath = "${this.publicPath}";
+  function getRetryUrl(src) {
+    var retryPublicPath  = '${this.options.retryPublicPath}';
+    var publicPath = '${this.publicPath}';
+    var bkFileNames = '${this.options.bkFileNames}';
 
-  if(retryPublicPath){
-    retryPublicPath += '/';
-    retryPublicPath = retryPublicPath.replace(/\\/\\/$/, '/');
+    if (!retryPublicPath || !publicPath || !src.includes(publicPath)) {
+      return src;
+    }
+
+    var fileName = src.slice(src.lastIndexOf('/') + 1);
+    var token = fileName.split('.');
+    var fileType = token[token.length - 1];
+    var filePrefix = src.replace(publicPath, '').replace(fileName, '');
+
+    if (bkFileNames == 'undefined' || (fileType !== 'js' && fileType !== 'css')) {
+      return retryPublicPath + filePrefix + fileName;
+    }
+
+    const bkFileNameMap = JSON.parse(bkFileNames);
+    const pureName = fileType === 'js' ? token[0] : token[0].split('__')[0];
+    const retryFileName = bkFileNameMap[fileType][pureName] || fileName;
+    return retryPublicPath + filePrefix + retryFileName;
   }
-  var value = src.replace(/^https?:/, '').replace(publicPath.replace(/^https?:/, ''), '').replace(/^\\//, '');
-  return retryPublicPath + value;
-}
 `;
   }
 
+  /**
+   * 重试部分的代码。
+   * @param {String} jsComplete 在js处理执行完成后执行的script.
+   */
   genRetryCode(jsComplete = '') {
     return `
   var isRetry = this.hasAttribute('retry');
-  // 只有异步的js走这个重试逻辑，同步的都是采用document.write
-  var isAsync = this.hasAttribute('isAsync');
+  var isAsync = this.hasAttribute('isAsync')||this.hasAttribute('async');
   var isStyle = this.tagName==='LINK';
   var isError = event.type==='error'||event.type==='timeout';
   var src = this.href||this.src;
   var newSrc = getRetryUrl(src);
-  if(isError){
-    if(isRetry){
-      report({
-        level: BADJS_LEVEL||2,
-        msg: this.tagName + ' retry load fail: ' + src,
-        ext: {
-          msid: isStyle?CSS_RETRY_FAIL_MSID:JS_RETRY_FAIL_MSID,
-        },
-      });
-    }else{
+  if(isError){ // 失败
+    if(isRetry){ 
+      // Retry fails
+    }else{ // 首次加载失败，插入新标签
+      // insert new script or css
+      // FIXME delete original one?
       if(isStyle){
         // link style 重新加载
         var link = document.createElement('link');
@@ -133,7 +102,8 @@ function getRetryUrl(src){
         link.setAttribute('onload',"__retryPlugin.call(this,event)");
         this.parentNode.insertBefore(link,this.nextSibling);
       }else if(isAsync){
-        // js 重新加载
+        // 只有异步的js走这个重试逻辑，同步的都是采用document.write
+        // 此处‘异步’包括插入html的带async标签的js文件，以及webpack打包之后动态加载的js bundle
         var head = document.getElementsByTagName('head')[0];
         var script = document.createElement('script');
       
@@ -146,93 +116,90 @@ function getRetryUrl(src){
         var _timeout_ = setTimeout(function() {
           script.onerror({ type: 'timeout', target: script });
         }, 120000);
+
+        // register retry error event
         script.onerror = function(event){
           script.onerror = script.onload = null;
           clearTimeout(_timeout_);
           ${jsComplete}
-          report({
-            level: BADJS_LEVEL||2,
-            msg: this.tagName + ' retry load fail: ' + this.src,
-            ext: {
-              msid: JS_RETRY_SUCC_MSID,
-            },
-          });
+          // Js retry fail
         }
         script.onload = function(event){
           script.onerror = script.onload = null;
           clearTimeout(_timeout_);
           ${jsComplete}
-          report({
-            level: BADJS_LEVEL||2,
-            msg: this.tagName + ' retry load success: ' + this.src,
-            ext: {
-              msid: JS_SUCC_MSID,
-            },
-          });
+          // Js retry success
         }
         head.appendChild(script);
-      }
-      report({
-        level: BADJS_LEVEL||2,
-        msg: this.tagName + ' load fail: ' + src,
-        ext: {
-          msid: isStyle?CSS_FAIL_MSID:JS_FAIL_MSID,
-        },
-      });
+      }  // end of js 重新加载
+      // Load fail (not retry)
     }
-  }else{
+  }else{ // 成功
+    ${varName}=${varName}||{};
+    var basename = src.substr(src.lastIndexOf('/')+1);
+    ${varName}[basename]=true;
     if(isRetry){
-      report({
-        level: BADJS_LEVEL||2,
-        msg: this.tagName + ' retry load success: ' + src,
-        ext: {
-          msid: isStyle?CSS_RETRY_SUCC_MSID:JS_RETRY_SUCC_MSID,
-        },
-      });
+      // Retry success
     }else{
-      report({
-        level: BADJS_LEVEL||2,
-        msg: this.tagName + ' load success: ' + src,
-        ext: {
-          msid: isStyle?CSS_SUCC_MSID:JS_SUCC_MSID,
-        },
-      });
+      // Load success 
     }
   }
 `;
   }
 
+  /**
+   * 生成retryPlugin函数。
+   * 没有任何立即生效的操作。
+   */
   async genInjectCode() {
     let code = `
-var ${varName}={};
+${varName}=${varName}||{};
 function __retryPlugin(event){
 try{// 修复部分浏览器this.tagName获取失败的问题
 this.onload=this.onerror = null;
-${this.genBadJsCode()}
 ${this.genGetRetryUrlCode()}
 ${this.genRetryCode()}
-}catch(e){}
+}catch(e){
+console.error(e);
+}
 }`;
     code = await babel(code, this.options);
     return `<script>${code}</script>`;
   }
 
+  /**
+   * 获取替换后的资源地址
+   * @param {String} src 原资源地址
+   */
   getRetryUrl(src) {
-    let { retryPublicPath } = this.options;
+    const { retryPublicPath, bkFileNames } = this.options;
     const { publicPath } = this;
 
-    if (retryPublicPath) {
-      retryPublicPath += '/';
-      retryPublicPath = retryPublicPath.replace(/\/\/$/, '/');
+    if (!retryPublicPath || !publicPath || !src.includes(publicPath)) {
+      return src;
     }
 
-    const value = src
-      .replace(/^https?:/, '')
-      .replace(publicPath.replace(/^https?:/, ''), '')
-      .replace(/^\//, '');
-    return retryPublicPath + value;
+    const fileName = src.slice(src.lastIndexOf('/') + 1);
+    const token = fileName.split('.');
+    const fileType = token[token.length - 1];
+    const filePrefix = src.replace(publicPath, '').replace(fileName, '');
+
+    if (!bkFileNames || (fileType !== 'js' && fileType !== 'css')) {
+      return retryPublicPath + filePrefix + fileName;
+    }
+
+    const bkFileNameMap = JSON.parse(bkFileNames);
+    const pureName = fileType === 'js' ? token[0] : token[0].split('__')[0];
+    const retryFileName = bkFileNameMap[fileType][pureName] || fileName;
+    return retryPublicPath + filePrefix + retryFileName;
   }
 
+  /**
+   * 注册htmlwebpakplugin钩子
+   * 1. 为每个非内联script和css标签注册onerror和onload函数
+   * 2. 在index.html文件里插入retryPlugin方法，在head内的最上方
+   * @param {*} compilation 
+   */
   registerHwpHooks(compilation) {
     // HtmlWebpackPlugin >= 4
     const hooks = HtmlWebpackPlugin.getHooks(compilation);
@@ -242,50 +209,61 @@ ${this.genRetryCode()}
         callback(null, pluginArgs);
       }
     );
-
+    
+    // 为每个script和stylesheets注册onerror和onload函数
     hooks.alterAssetTags.tap(pluginName, ({ assetTags }) => {
       const code = '__retryPlugin.call(this,event)';
-      assetTags.styles.map(tag => {
+      const isFromPublicPath = url => url && url.includes(this.publicPath);
+      assetTags.styles.forEach(tag => {
+        if (!isFromPublicPath(tag.attributes.href)) { return; }
         tag.attributes.onerror = code;
         tag.attributes.onload = code;
       });
       assetTags.scripts
-        .filter(tag => tag.src)
-        .map(tag => {
+        .forEach(tag => {
+          if (!isFromPublicPath(tag.attributes.src)) { return; }
           tag.attributes.onerror = code;
           tag.attributes.onload = code;
         });
     });
+
+    // 在html文件中注入retryPlugin相关代码
     hooks.beforeEmit.tapAsync(pluginName, async (pluginArgs, callback) => {
       let { html } = pluginArgs;
       html = html.replace('<head>', `<head>${await this.genInjectCode()}`);
       const scripts = attrParse(html).filter(tag => tag.name === SCRIPT);
 
+      /**
+       * 以下代码为对首屏非内联js（即打包时就插入index.html的js文件）的处理，如kitten.js
+       * 对于这些js文件，通过修改代码使其在加载成功后将__JS_RETRY__中的对应chunk值标记为true
+       * 并在每个js文件的script标签下面插入一段script，内容为当该js加载不成功时，立即用document.write向文档中写入用于重试的标签
+       * 
+       * 保证所有同步js按照顺序加载
+       */
       scripts.reverse();
       html = [html];
       scripts.forEach(tag => {
         const { attrs } = tag;
-        let url = '';
-        attrs.map(attr => {
+        let origin_url = '';
+        attrs.forEach(attr => {
           if (attr.name === 'src') {
+            origin_url = attr.value;
             attr.value = this.getRetryUrl(attr.value);
-            url = attr.value;
           }
         });
 
+        if (!origin_url) {
+          throw Error('not url');
+        }
         let code = '';
 
-        if (url) {
-          const filename = path.basename(url);
-          if (this.matchObject(url)) {
-            const script = `\\x3Cscript type="text/javascript" ${attrs
-              .filter(({ name }) => name !== 'crossOrigin')
-              .map(i => `${i.name}="${i.value}"`)
-              .join(' ')} retry>\\x3C/script>`;
-            code = `<script>if(!__JS_RETRY__["${filename}"]){document.write('${script}');}</script>`;
-          }
-        } else {
-          throw Error('not found url');
+        if (this.matchObject(origin_url)) {
+          const filename = path.basename(origin_url);
+          const script = `\\x3Cscript type="text/javascript" ${attrs
+            .filter(({ name }) => name !== 'crossOrigin')
+            .map(i => `${i.name}="${i.value}"`)
+            .join(' ')} retry>\\x3C/script>`;
+          code = `<script>if(!${varName}["${filename}"]) {document.write('${script}');}</script>`;
         }
 
         const x = html.pop();
@@ -310,13 +288,48 @@ ${this.genRetryCode()}
     }
   }
 
+  // webpack的asRegExp方法会在生成的正则表达式前加^
+  // 即只匹配文件名前缀
+  // 此处做修改以匹配文件全名
+  matchPart (str, test) {
+    if (!test) return true;
+    const asRegExp = test => {
+      if (typeof test === 'string') {
+        test = new RegExp(test.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&"));
+      }
+      return test;
+    };
+    test = asRegExp(test);
+    if (Array.isArray(test)) {
+      return test.map(asRegExp).some(regExp => regExp.test(str));
+    } else {
+      return test.test(str);
+    }
+  };
+
+  matchObject (str) {
+    if (this.options.include) {
+      if (!this.matchPart(str, this.options.include)) {
+        return false;
+      }
+    }
+    if (this.options.exclude) {
+      if (this.matchPart(str, this.options.exclude)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
   apply(compiler) {
     const { options } = this;
     this.publicPath = compiler.options.output.publicPath;
-    this.matchObject = ModuleFilenameHelpers.matchObject.bind(
-      undefined,
-      options
-    );
+
+    // Do nothing when the retry path is useless (the same to the original one)
+    if (this.publicPath === options.retryPublicPath) {
+      return;
+    }
+
     compiler.hooks.compilation.tap(pluginName, compilation => {
       this.registerHwpHooks(compilation);
       compilation.hooks.optimizeChunkAssets.tap(pluginName, chunks => {
@@ -325,6 +338,7 @@ ${this.genRetryCode()}
             continue;
           }
           for (const file of chunk.files) {
+            // 根据options筛选出需要处理的文件
             if (!this.matchObject(file)) {
               continue;
             }
@@ -346,11 +360,11 @@ ${this.genRetryCode()}
               basename = filename.substr(lastSlashIndex + 1);
             }
 
-            // 只有js需要标记
-            if (!/.js$/.test(filename)) {
+            // 只有js需要标记，css无法执行该方法
+            if (!/.js$/.test(filename) || /worker.js$/.test(filename)) {
               continue;
             }
-            const code = `var ${varName}=${varName}||{};\n${varName}["${basename}"]=true;`;
+            const code = `${varName}=${varName}||{}; ${varName}["${basename}"]=true;`;
 
             compilation.assets[file] = new ConcatSource(
               code,

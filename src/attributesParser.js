@@ -1,6 +1,7 @@
 const Parser = require('fastparse');
 const { LINK, SCRIPT } = require('./const');
 
+// 获取当前html中所有script及stylesheet标签
 module.exports = function parse(html) {
   const results = [];
   let currentTag = {};

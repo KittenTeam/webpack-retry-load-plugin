@@ -21,11 +21,24 @@ webpack config
 const RetryPlugin = require('webpack-retry-load-plugin');
 {
   output:{
-    publicPath:"//cdn.com/pc/",// you cdn path
+    publicPath:"//cdn.com/pc/", // cdn地址
   },
   plugins: [
     new RetryPlugin({
-      retryPublicPath: '//example.com/pc/',// you doamin path
+      // 重试加载地址，必须以'/'结尾
+      retryPublicPath: '//example.com/pc/', 
+
+      // 可选，不通过该插件【同步】处理的文件（依然会被加上onerror标签）
+      exclude: 'tingyun-rum',
+
+      // 可选，json格式纯文件名对应备份文件全名, 需将js和css分开
+      // 在重试时会查询该字典，将js及css的src由 "[publicPath]a.[hash].js" 替换为 "[retryPublicPath]a.[hash_bk].js"
+      // 若不引入hash则可不传
+      // 字典中不存在的文件名将被保持原状
+      bkFileNames: JSON.stringify({
+        js: { 'a': 'a.[hash_bk].js', ... },
+        css: { 'b': 'b__[hash_bk].css', ...},
+      })
     }),
   ]
 }

@@ -51,30 +51,14 @@ class MainTemplatePlugin {
             'link.onerror=function(){',
             Template.indent([
               'link.onerror=link.onload=null',
-              'report({',
-              Template.indent([
-                'level: BADJS_LEVEL||2,',
-                "msg: 'LINK retry fail:'+newSrc,",
-                'ext: {',
-                Template.indent(['msid: CSS_RETRY_FAIL_MSID,']),
-                '},',
-              ]),
-              '});',
+              '// css retry fail',
               'reject(err);',
             ]),
             '};',
             'link.onload=function(){',
             Template.indent([
               'link.onerror=link.onload=null',
-              'report({',
-              Template.indent([
-                'level: BADJS_LEVEL||2,',
-                "msg: 'LINK retry success:'+newSrc,",
-                'ext: {',
-                Template.indent(['msid: CSS_RETRY_SUCC_MSID,']),
-                '},',
-              ]),
-              '});',
+              '// css retry success',
               'resolve();',
             ]),
             '};',
@@ -97,8 +81,7 @@ class MainTemplatePlugin {
       hooks.localVars.tap(pluginName, source => {
         return Template.asString([
           source,
-          `// ${pluginName} badjs report and get retry function`,
-          this.retryPlugin.genBadJsCode(),
+          `// ${pluginName} get retry function`,
           this.retryPlugin.genGetRetryUrlCode(),
         ]);
       });

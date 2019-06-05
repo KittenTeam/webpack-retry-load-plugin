@@ -17,6 +17,8 @@ module.exports = (code, options) => {
         },
       ],
     ],
+    // ignore: [/[\/\\]core-js/, /@babel[\/\\]runtime/],
+    filename: './babel.config.js', // hacky to make overrides works
   };
   return new Promise((resolve, reject) => {
     transform(code, babelOptions, (err, info) => {
